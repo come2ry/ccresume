@@ -222,6 +222,20 @@ async function readConversation(filePath: string, projectDir: string): Promise<C
   }
 }
 
+// Load specific conversations by file paths
+export async function getConversationsByPaths(
+  filePaths: Array<{ filePath: string; projectDir: string }>
+): Promise<Conversation[]> {
+  const conversations: Conversation[] = [];
+  for (const { filePath, projectDir } of filePaths) {
+    const conversation = await readConversation(filePath, projectDir);
+    if (conversation) {
+      conversations.push(conversation);
+    }
+  }
+  return conversations;
+}
+
 export function formatConversationSummary(conversation: Conversation): string {
   const firstMessagePreview = conversation.firstMessage
     .replace(/\n/g, ' ')
