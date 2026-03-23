@@ -11,7 +11,6 @@ export interface SearchableSession {
   projectDir: string;
   mtime: Date;
   searchText: string;   // lowercased for matching
-  originalText: string;  // original case for display
 }
 
 export interface SearchResult {
@@ -20,13 +19,13 @@ export interface SearchResult {
   matchTerms: string[];
 }
 
-// Regex-based fast text extraction — no JSON.parse, no line splitting
-// Scan the entire file content with global regex
+// Regex patterns for fast extraction
 const CWD_RE = /"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"/;
 const BRANCH_RE = /"gitBranch"\s*:\s*"((?:[^"\\]|\\.)*)"/;
-// Match both "text":"..." and "content":"..." (string values only, not arrays)
-// "content" can be a plain string for user messages or a string inside tool_result
+// Match "text" and "content" string fields
 const SEARCHABLE_FIELD_RE = /"(?:text|content)"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+// Only extract from user/assistant message lines
+const MSG_TYPE_RE = /"type"\s*:\s*"(?:user|assistant)"/;
 
 function fastExtractTexts(content: string): string {
   const parts: string[] = [];
@@ -37,14 +36,24 @@ function fastExtractTexts(content: string): string {
   const branchMatch = content.match(BRANCH_RE);
   if (branchMatch) parts.push(unescapeJson(branchMatch[1]));
 
-  // Extract all "text" and "content" string values in one pass
-  SEARCHABLE_FIELD_RE.lastIndex = 0;
-  let match;
-  while ((match = SEARCHABLE_FIELD_RE.exec(content)) !== null) {
-    const val = match[1];
-    // Skip very short values (type markers like "text", "tool_result", etc.)
-    if (val.length > 2) {
-      parts.push(unescapeJson(val));
+  // Process only user/assistant message lines to avoid indexing
+  // tool output file contents, todo items, etc.
+  let lineStart = 0;
+  while (lineStart < content.length) {
+    let lineEnd = content.indexOf('\n', lineStart);
+    if (lineEnd === -1) lineEnd = content.length;
+    const line = content.substring(lineStart, lineEnd);
+    lineStart = lineEnd + 1;
+
+    if (!MSG_TYPE_RE.test(line)) continue;
+
+    SEARCHABLE_FIELD_RE.lastIndex = 0;
+    let match;
+    while ((match = SEARCHABLE_FIELD_RE.exec(line)) !== null) {
+      const val = match[1];
+      if (val.length > 2) {
+        parts.push(unescapeJson(val));
+      }
     }
   }
 
@@ -52,7 +61,6 @@ function fastExtractTexts(content: string): string {
 }
 
 function unescapeJson(s: string): string {
-  // Fast path: no escapes
   if (!s.includes('\\')) return s;
   return s
     .replace(/\\n/g, '\n')
@@ -75,15 +83,12 @@ async function buildSessionIndex(filePath: string, projectDir: string): Promise<
     const extracted = fastExtractTexts(content);
     if (!extracted) return null;
 
-    const originalText = sessionId + ' ' + extracted;
-
     return {
       sessionId,
       filePath,
       projectDir,
       mtime: stats.mtime,
-      searchText: originalText.toLowerCase(),
-      originalText,
+      searchText: (sessionId + ' ' + extracted).toLowerCase(),
     };
   } catch {
     return null;
@@ -91,7 +96,6 @@ async function buildSessionIndex(filePath: string, projectDir: string): Promise<
 }
 
 export async function buildAllSessionIndexes(): Promise<SearchableSession[]> {
-  // Collect all file paths first
   const allFiles: Array<{ filePath: string; projectDir: string }> = [];
 
   try {
@@ -119,7 +123,6 @@ export async function buildAllSessionIndexes(): Promise<SearchableSession[]> {
     return [];
   }
 
-  // Process files with bounded concurrency
   const sessions: SearchableSession[] = [];
   for (let i = 0; i < allFiles.length; i += CONCURRENCY) {
     const batch = allFiles.slice(i, i + CONCURRENCY);
@@ -151,7 +154,7 @@ export function searchSessions(
     const matches = terms.every(term => session.searchText.includes(term));
     if (!matches) continue;
 
-    const snippet = extractSnippet(session.originalText, session.searchText, terms);
+    const snippet = extractSnippet(session.searchText, terms);
     results.push({ session, snippet, matchTerms: terms });
   }
 
@@ -159,30 +162,29 @@ export function searchSessions(
 }
 
 function extractSnippet(
-  originalText: string,
-  lowerText: string,
+  text: string,
   terms: string[],
   contextChars: number = 60
 ): string {
-  let bestPos = lowerText.length;
+  let bestPos = text.length;
   let bestTerm = '';
 
   for (const term of terms) {
-    const pos = lowerText.indexOf(term);
+    const pos = text.indexOf(term);
     if (pos !== -1 && pos < bestPos) {
       bestPos = pos;
       bestTerm = term;
     }
   }
 
-  if (bestPos === lowerText.length) return '';
+  if (bestPos === text.length) return '';
 
   const start = Math.max(0, bestPos - contextChars);
-  const end = Math.min(originalText.length, bestPos + bestTerm.length + contextChars);
-  let snippet = originalText.slice(start, end).replace(/[\r\n]+/g, ' ');
+  const end = Math.min(text.length, bestPos + bestTerm.length + contextChars);
+  let snippet = text.slice(start, end).replace(/[\r\n]+/g, ' ');
 
   if (start > 0) snippet = '...' + snippet;
-  if (end < originalText.length) snippet = snippet + '...';
+  if (end < text.length) snippet = snippet + '...';
 
   return snippet;
 }
