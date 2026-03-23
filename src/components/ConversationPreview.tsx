@@ -128,40 +128,25 @@ export const ConversationPreview: React.FC<ConversationPreviewProps> = ({ conver
     return true;
   }) : [], [conversation, hideOptions]);
 
-  useEffect(() => {
-    if (conversation) {
-      if (searchTerms && searchTerms.length > 0) {
-        // Scroll to first matching message - search across all text fields
-        const matchIndex = filteredMessages.findIndex(msg => {
-          const parts: string[] = [];
-          if (msg.message?.content) parts.push(extractMessageText(msg.message.content));
-          if (msg.cwd) parts.push(msg.cwd);
-          if (msg.toolUseResult) {
-            const r = msg.toolUseResult;
-            if (r.stdout) parts.push(r.stdout);
-            if (r.stderr) parts.push(r.stderr);
-            if (r.content) parts.push(r.content);
-          }
-          return textContainsTerm(parts.join(' '), searchTerms);
-        });
-        if (matchIndex >= 0) {
-          // Place the match line near the top of the visible area
-          const totalMessages = filteredMessages.length;
-          const maxOffset = Math.max(0, totalMessages - maxVisibleMessages);
-          startTransition(() => setScrollOffset(Math.min(matchIndex, maxOffset)));
-        } else {
-          startTransition(() => setScrollOffset(0));
-        }
-      } else {
-        // Default: scroll to the bottom (most recent messages)
-        const totalMessages = filteredMessages.length;
-        const maxOffset = Math.max(0, totalMessages - maxVisibleMessages);
-        startTransition(() => setScrollOffset(maxOffset));
-      }
-    } else {
-      startTransition(() => setScrollOffset(0));
+  // Compute initial scroll position based on search or default
+  const targetScrollOffset = useMemo(() => {
+    if (!conversation) return 0;
+    const totalMessages = filteredMessages.length;
+    const maxOffset = Math.max(0, totalMessages - maxVisibleMessages);
+
+    if (searchTerms && searchTerms.length > 0) {
+      const matchIndex = filteredMessages.findIndex(msg => {
+        const content = msg.message?.content ? extractMessageText(msg.message.content) : '';
+        return textContainsTerm(content, searchTerms);
+      });
+      return matchIndex >= 0 ? Math.min(matchIndex, maxOffset) : 0;
     }
+    return maxOffset; // default: scroll to bottom
   }, [conversation, filteredMessages, maxVisibleMessages, searchTerms]);
+
+  useEffect(() => {
+    startTransition(() => setScrollOffset(targetScrollOffset));
+  }, [targetScrollOffset]);
 
 
   useInput((input, key) => {
