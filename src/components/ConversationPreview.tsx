@@ -58,9 +58,11 @@ interface ConversationPreviewProps {
   statusMessage?: string | null;
   hideOptions?: string[];
   searchTerms?: string[];
+  inputDisabled?: boolean;
 }
 
-export const ConversationPreview: React.FC<ConversationPreviewProps> = ({ conversation, statusMessage, hideOptions = [], searchTerms }) => {
+const EMPTY_HIDE_OPTIONS: string[] = [];
+export const ConversationPreview: React.FC<ConversationPreviewProps> = ({ conversation, statusMessage, hideOptions = EMPTY_HIDE_OPTIONS, searchTerms, inputDisabled = false }) => {
   const { stdout } = useStdout();
   const [scrollOffset, setScrollOffset] = useState(0);
   const terminalWidth = stdout?.columns || 80;
@@ -88,8 +90,8 @@ export const ConversationPreview: React.FC<ConversationPreviewProps> = ({ conver
     return Math.max(5, calculatedHeight);
   }, [stdout?.rows]);
 
-  // Filter messages based on hideOptions
-  const filteredMessages = conversation ? conversation.messages.filter(msg => {
+  // Filter messages based on hideOptions (memoized for stable reference)
+  const filteredMessages = useMemo(() => conversation ? conversation.messages.filter(msg => {
     if (!msg || (!msg.message && !msg.toolUseResult)) {
       return false;
     }
@@ -124,7 +126,7 @@ export const ConversationPreview: React.FC<ConversationPreviewProps> = ({ conver
     }
     
     return true;
-  }) : [];
+  }) : [], [conversation, hideOptions]);
 
   useEffect(() => {
     if (conversation) {
@@ -159,11 +161,11 @@ export const ConversationPreview: React.FC<ConversationPreviewProps> = ({ conver
     } else {
       startTransition(() => setScrollOffset(0));
     }
-  }, [conversation, filteredMessages.length, maxVisibleMessages, searchTerms]);
+  }, [conversation, filteredMessages, maxVisibleMessages, searchTerms]);
 
 
   useInput((input, key) => {
-    if (!conversation) return;
+    if (!conversation || inputDisabled) return;
     
     const totalMessages = filteredMessages.length;
     const maxOffset = Math.max(0, totalMessages - maxVisibleMessages);
@@ -217,8 +219,15 @@ export const ConversationPreview: React.FC<ConversationPreviewProps> = ({ conver
 
   // Check if search match exists in visible messages vs hidden content
   const hasVisibleMatch = searchTerms && searchTerms.length > 0 && filteredMessages.some(msg => {
-    const content = msg.message?.content ? extractMessageText(msg.message.content) : '';
-    return textContainsTerm(content, searchTerms);
+    const parts: string[] = [];
+    if (msg.message?.content) parts.push(extractMessageText(msg.message.content));
+    if (msg.toolUseResult) {
+      const r = msg.toolUseResult;
+      if (r.stdout) parts.push(r.stdout);
+      if (r.stderr) parts.push(r.stderr);
+      if (r.content) parts.push(r.content);
+    }
+    return textContainsTerm(parts.join(' '), searchTerms);
   });
   const showHiddenMatchHint = searchTerms && searchTerms.length > 0 && !hasVisibleMatch;
 

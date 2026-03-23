@@ -6,6 +6,7 @@ interface SearchBarProps {
   isActive: boolean;
   resultCount: number;
   totalCount: number;
+  maxResults: number;
   isLoading: boolean;
 }
 
@@ -14,6 +15,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
   isActive,
   resultCount,
   totalCount,
+  maxResults,
   isLoading,
 }) => {
   if (!isActive && !query) return null;
@@ -33,7 +35,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
         <Text dimColor>Loading sessions...</Text>
       ) : query ? (
         <Text dimColor>
-          {resultCount}/{totalCount} matched
+          {resultCount >= maxResults ? `${maxResults}+ ` : `${resultCount}`}/{totalCount} matched
           {isActive ? '  (↓: navigate  Esc: clear)' : '  (/: edit search)'}
         </Text>
       ) : isActive ? (

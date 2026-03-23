@@ -34,6 +34,7 @@ const DEFAULT_TERMINAL_WIDTH = 80;
 const DEFAULT_TERMINAL_HEIGHT = 24;
 const EXECUTE_DELAY_MS = 500; // Delay before executing command to show status
 const STATUS_MESSAGE_DURATION_MS = 2000; // Duration to show status messages
+const SEARCH_MAX_RESULTS = 30;
 
 const App: React.FC<AppProps> = ({ claudeArgs = [], currentDirOnly = false, hideOptions = [] }) => {
   const { exit } = useApp();
@@ -58,23 +59,19 @@ const App: React.FC<AppProps> = ({ claudeArgs = [], currentDirOnly = false, hide
   const [searchMode, setSearchMode] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Conversation[]>([]);
-  const [searchSnippets, setSearchSnippets] = useState<Map<string, string>>(new Map());
-  const [searchMatchTerms, setSearchMatchTerms] = useState<string[]>([]);
   const [searchIndex, setSearchIndex] = useState<SearchableSession[] | null>(null);
-  const [searchIndexLoading, setSearchIndexLoading] = useState(false);
   const searchIndexRef = useRef<SearchableSession[] | null>(null);
 
-  // Start background loading of search index on mount
+  // Lazy-load search index: start building only when search mode is first activated
+  const indexLoadStarted = useRef(false);
   useEffect(() => {
-    let cancelled = false;
+    if (!searchMode || indexLoadStarted.current) return;
+    indexLoadStarted.current = true;
     buildAllSessionIndexes().then(sessions => {
-      if (!cancelled) {
-        searchIndexRef.current = sessions;
-        setSearchIndex(sessions);
-      }
+      searchIndexRef.current = sessions;
+      setSearchIndex(sessions);
     });
-    return () => { cancelled = true; };
-  }, []);
+  }, [searchMode]);
 
   useEffect(() => {
     // Update dimensions on terminal resize
@@ -189,41 +186,43 @@ const App: React.FC<AppProps> = ({ claudeArgs = [], currentDirOnly = false, hide
     }
   }, [currentPage, currentDirOnly]);
 
-  // Search effect: filter and load conversations when query changes
-  const prevSearchQuery = useRef('');
-  useEffect(() => {
-    if (searchQuery === prevSearchQuery.current) return;
-    prevSearchQuery.current = searchQuery;
+  // Compute search filtering synchronously
+  const { searchSnippets, searchMatchTerms, searchPaths, searchIndexLoading } = useMemo(() => {
+    const empty = {
+      searchSnippets: new Map<string, string>(),
+      searchMatchTerms: [] as string[],
+      searchPaths: null as Array<{ filePath: string; projectDir: string }> | null,
+      searchIndexLoading: false,
+    };
+    if (!searchQuery.trim()) return empty;
+    if (!searchIndex) return { ...empty, searchIndexLoading: true };
 
-    if (!searchQuery.trim()) {
-      setSearchResults([]);
-      setSearchSnippets(new Map());
-      setSearchMatchTerms([]);
-      return;
-    }
-
-    const index = searchIndexRef.current;
-    if (!index) {
-      setSearchIndexLoading(true);
-      return;
-    }
-
-    const results = searchSessions(index, searchQuery, 30);
+    const results = searchSessions(searchIndex, searchQuery, SEARCH_MAX_RESULTS);
     const snippetMap = new Map<string, string>();
     for (const r of results) {
       snippetMap.set(r.session.sessionId, r.snippet);
     }
-    setSearchSnippets(snippetMap);
-    setSearchMatchTerms(results.length > 0 ? results[0].matchTerms : []);
+    return {
+      searchSnippets: snippetMap,
+      searchMatchTerms: results.length > 0 ? results[0].matchTerms : [],
+      searchPaths: results.map(r => ({
+        filePath: r.session.filePath,
+        projectDir: r.session.projectDir,
+      })),
+      searchIndexLoading: false,
+    };
+  }, [searchQuery, searchIndex]);
 
-    // Load full Conversation objects for search results
-    const paths = results.map(r => ({
-      filePath: r.session.filePath,
-      projectDir: r.session.projectDir,
-    }));
+  // Async effect: load full Conversation objects for search results
+  const searchPathsKey = searchPaths ? searchPaths.map(p => p.filePath).join(',') : '';
+  useEffect(() => {
+    if (!searchPaths || searchPaths.length === 0) {
+      setSearchResults([]);
+      return;
+    }
 
     let cancelled = false;
-    getConversationsByPaths(paths).then(convs => {
+    getConversationsByPaths(searchPaths).then(convs => {
       if (!cancelled) {
         setSearchResults(convs);
         setSelectedIndex(0);
@@ -231,7 +230,8 @@ const App: React.FC<AppProps> = ({ claudeArgs = [], currentDirOnly = false, hide
     });
 
     return () => { cancelled = true; };
-  }, [searchQuery, searchIndex]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchPathsKey]);
 
   const prevPageRef = useRef(0);
   
@@ -261,8 +261,6 @@ const App: React.FC<AppProps> = ({ claudeArgs = [], currentDirOnly = false, hide
         setSearchMode(false);
         setSearchQuery('');
         setSearchResults([]);
-        setSearchSnippets(new Map());
-        setSearchMatchTerms([]);
         setSelectedIndex(0);
         return;
       }
@@ -310,8 +308,6 @@ const App: React.FC<AppProps> = ({ claudeArgs = [], currentDirOnly = false, hide
       if (searchQuery) {
         setSearchQuery('');
         setSearchResults([]);
-        setSearchSnippets(new Map());
-        setSearchMatchTerms([]);
         setSelectedIndex(0);
       }
       return;
@@ -322,8 +318,6 @@ const App: React.FC<AppProps> = ({ claudeArgs = [], currentDirOnly = false, hide
         // q clears search first
         setSearchQuery('');
         setSearchResults([]);
-        setSearchSnippets(new Map());
-        setSearchMatchTerms([]);
         setSelectedIndex(0);
         return;
       }
@@ -515,6 +509,7 @@ const App: React.FC<AppProps> = ({ claudeArgs = [], currentDirOnly = false, hide
             isActive={searchMode}
             resultCount={searchResults.length}
             totalCount={searchIndex?.length ?? 0}
+            maxResults={SEARCH_MAX_RESULTS}
             isLoading={searchIndexLoading}
           />
         )}
@@ -532,7 +527,7 @@ const App: React.FC<AppProps> = ({ claudeArgs = [], currentDirOnly = false, hide
       </Box>
       
       <Box height={previewHeight}>
-        <ConversationPreview conversation={selectedConversation} statusMessage={statusMessage} hideOptions={hideOptions} searchTerms={searchQuery ? searchMatchTerms : undefined} />
+        <ConversationPreview conversation={selectedConversation} statusMessage={statusMessage} hideOptions={hideOptions} searchTerms={searchQuery ? searchMatchTerms : undefined} inputDisabled={searchMode} />
       </Box>
       
       {/* Bottom margin to absorb any overflow */}
