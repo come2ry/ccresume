@@ -1,9 +1,9 @@
 import { readdir, readFile, stat } from 'fs/promises';
 import { join, basename } from 'path';
 import { homedir } from 'os';
-import { extractMessageText } from './messageUtils.js';
 
 const CLAUDE_PROJECTS_DIR = join(homedir(), '.claude', 'projects');
+const CONCURRENCY = 64;
 
 export interface SearchableSession {
   sessionId: string;
@@ -16,48 +16,60 @@ export interface SearchableSession {
 
 export interface SearchResult {
   session: SearchableSession;
-  snippet: string;        // original-case snippet around the match
-  matchTerms: string[];   // lowercased terms that matched
+  snippet: string;
+  matchTerms: string[];
+}
+
+// Regex-based fast text extraction — no JSON.parse, no line splitting
+// Scan the entire file content with global regex
+const CWD_RE = /"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"/;
+const BRANCH_RE = /"gitBranch"\s*:\s*"((?:[^"\\]|\\.)*)"/;
+const TEXT_FIELD_RE = /"text"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+
+function fastExtractTexts(content: string): string {
+  const parts: string[] = [];
+
+  // Extract cwd + branch from first occurrence
+  const cwdMatch = content.match(CWD_RE);
+  if (cwdMatch) parts.push(unescapeJson(cwdMatch[1]));
+  const branchMatch = content.match(BRANCH_RE);
+  if (branchMatch) parts.push(unescapeJson(branchMatch[1]));
+
+  // Extract all "text" values in one pass over the entire file
+  TEXT_FIELD_RE.lastIndex = 0;
+  let match;
+  while ((match = TEXT_FIELD_RE.exec(content)) !== null) {
+    parts.push(unescapeJson(match[1]));
+  }
+
+  return parts.join(' ');
+}
+
+function unescapeJson(s: string): string {
+  // Fast path: no escapes
+  if (!s.includes('\\')) return s;
+  return s
+    .replace(/\\n/g, '\n')
+    .replace(/\\t/g, '\t')
+    .replace(/\\r/g, '\r')
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, '\\');
 }
 
 async function buildSessionIndex(filePath: string, projectDir: string): Promise<SearchableSession | null> {
   try {
-    const content = await readFile(filePath, 'utf-8');
-    const lines = content.trim().split('\n').filter(line => line.trim());
+    const [content, stats] = await Promise.all([
+      readFile(filePath, 'utf-8'),
+      stat(filePath),
+    ]);
 
-    if (lines.length === 0) return null;
+    if (content.length === 0) return null;
 
     const sessionId = basename(filePath).replace('.jsonl', '');
-    const stats = await stat(filePath);
-    const texts: string[] = [sessionId];
+    const extracted = fastExtractTexts(content);
+    if (!extracted) return null;
 
-    for (const line of lines) {
-      try {
-        const data = JSON.parse(line);
-
-        if (data.cwd) texts.push(data.cwd);
-        if (data.gitBranch) texts.push(data.gitBranch);
-
-        if (data.type === 'user' || data.type === 'assistant') {
-          const text = extractMessageText(data.message?.content);
-          if (text) texts.push(text);
-          // Also index tool_result content for search
-          if (data.type === 'user' &&
-              data.message?.content &&
-              Array.isArray(data.message.content)) {
-            for (const item of data.message.content) {
-              if (item?.type === 'tool_result' && typeof item.content === 'string') {
-                texts.push(item.content);
-              }
-            }
-          }
-        }
-      } catch {
-        continue;
-      }
-    }
-
-    const originalText = texts.join(' ');
+    const originalText = sessionId + ' ' + extracted;
 
     return {
       sessionId,
@@ -73,7 +85,8 @@ async function buildSessionIndex(filePath: string, projectDir: string): Promise<
 }
 
 export async function buildAllSessionIndexes(): Promise<SearchableSession[]> {
-  const sessions: SearchableSession[] = [];
+  // Collect all file paths first
+  const allFiles: Array<{ filePath: string; projectDir: string }> = [];
 
   try {
     const projectDirs = await readdir(CLAUDE_PROJECTS_DIR);
@@ -93,13 +106,23 @@ export async function buildAllSessionIndexes(): Promise<SearchableSession[]> {
       );
 
       for (const file of jsonlFiles) {
-        const filePath = join(projectPath, file);
-        const session = await buildSessionIndex(filePath, projectDir);
-        if (session) sessions.push(session);
+        allFiles.push({ filePath: join(projectPath, file), projectDir });
       }
     }
   } catch {
     return [];
+  }
+
+  // Process files with bounded concurrency
+  const sessions: SearchableSession[] = [];
+  for (let i = 0; i < allFiles.length; i += CONCURRENCY) {
+    const batch = allFiles.slice(i, i + CONCURRENCY);
+    const results = await Promise.all(
+      batch.map(f => buildSessionIndex(f.filePath, f.projectDir))
+    );
+    for (const s of results) {
+      if (s) sessions.push(s);
+    }
   }
 
   sessions.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
@@ -135,7 +158,6 @@ function extractSnippet(
   terms: string[],
   contextChars: number = 60
 ): string {
-  // Find the earliest match position in the lowercased text
   let bestPos = lowerText.length;
   let bestTerm = '';
 
@@ -149,7 +171,6 @@ function extractSnippet(
 
   if (bestPos === lowerText.length) return '';
 
-  // Extract from original text at the same positions
   const start = Math.max(0, bestPos - contextChars);
   const end = Math.min(originalText.length, bestPos + bestTerm.length + contextChars);
   let snippet = originalText.slice(start, end).replace(/[\r\n]+/g, ' ');

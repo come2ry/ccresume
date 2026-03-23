@@ -128,25 +128,40 @@ export const ConversationPreview: React.FC<ConversationPreviewProps> = ({ conver
     return true;
   }) : [], [conversation, hideOptions]);
 
-  // Compute initial scroll position based on search or default
-  const targetScrollOffset = useMemo(() => {
-    if (!conversation) return 0;
-    const totalMessages = filteredMessages.length;
-    const maxOffset = Math.max(0, totalMessages - maxVisibleMessages);
-
-    if (searchTerms && searchTerms.length > 0) {
-      const matchIndex = filteredMessages.findIndex(msg => {
-        const content = msg.message?.content ? extractMessageText(msg.message.content) : '';
-        return textContainsTerm(content, searchTerms);
-      });
-      return matchIndex >= 0 ? Math.min(matchIndex, maxOffset) : 0;
-    }
-    return maxOffset; // default: scroll to bottom
-  }, [conversation, filteredMessages, maxVisibleMessages, searchTerms]);
-
   useEffect(() => {
-    startTransition(() => setScrollOffset(targetScrollOffset));
-  }, [targetScrollOffset]);
+    if (conversation) {
+      if (searchTerms && searchTerms.length > 0) {
+        // Scroll to first matching message - search across all text fields
+        const matchIndex = filteredMessages.findIndex(msg => {
+          const parts: string[] = [];
+          if (msg.message?.content) parts.push(extractMessageText(msg.message.content));
+          if (msg.cwd) parts.push(msg.cwd);
+          if (msg.toolUseResult) {
+            const r = msg.toolUseResult;
+            if (r.stdout) parts.push(r.stdout);
+            if (r.stderr) parts.push(r.stderr);
+            if (r.content) parts.push(r.content);
+          }
+          return textContainsTerm(parts.join(' '), searchTerms);
+        });
+        if (matchIndex >= 0) {
+          // Place the match line near the top of the visible area
+          const totalMessages = filteredMessages.length;
+          const maxOffset = Math.max(0, totalMessages - maxVisibleMessages);
+          startTransition(() => setScrollOffset(Math.min(matchIndex, maxOffset)));
+        } else {
+          startTransition(() => setScrollOffset(0));
+        }
+      } else {
+        // Default: scroll to the bottom (most recent messages)
+        const totalMessages = filteredMessages.length;
+        const maxOffset = Math.max(0, totalMessages - maxVisibleMessages);
+        startTransition(() => setScrollOffset(maxOffset));
+      }
+    } else {
+      startTransition(() => setScrollOffset(0));
+    }
+  }, [conversation, filteredMessages, maxVisibleMessages, searchTerms]);
 
 
   useInput((input, key) => {
@@ -202,19 +217,6 @@ export const ConversationPreview: React.FC<ConversationPreviewProps> = ({ conver
   // Account for borders (2) and padding (2) on each side
   const safeWidth = Math.max(40, terminalWidth - 4);
 
-  // Check if search match exists in visible messages vs hidden content
-  const hasVisibleMatch = searchTerms && searchTerms.length > 0 && filteredMessages.some(msg => {
-    const parts: string[] = [];
-    if (msg.message?.content) parts.push(extractMessageText(msg.message.content));
-    if (msg.toolUseResult) {
-      const r = msg.toolUseResult;
-      if (r.stdout) parts.push(r.stdout);
-      if (r.stderr) parts.push(r.stderr);
-      if (r.content) parts.push(r.content);
-    }
-    return textContainsTerm(parts.join(' '), searchTerms);
-  });
-  const showHiddenMatchHint = searchTerms && searchTerms.length > 0 && !hasVisibleMatch;
 
 
   return (
@@ -238,13 +240,7 @@ export const ConversationPreview: React.FC<ConversationPreviewProps> = ({ conver
           <Text bold>Branch: </Text>
           <Text>{strictTruncateByWidth(conversation.gitBranch || '-', safeWidth - 9)}</Text>
         </Box>
-        {showHiddenMatchHint && (
-          <Box>
-            <Text backgroundColor="yellow" color="black" bold> MATCH </Text>
-            <Text color="yellow"> found in tool output (not displayed in messages)</Text>
-          </Box>
-        )}
-        <Box marginBottom={showHiddenMatchHint ? 0 : 1} />
+        <Box marginBottom={1} />
       </Box>
 
       {/* Messages area with inner border */}
