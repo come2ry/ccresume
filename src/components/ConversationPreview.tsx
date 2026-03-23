@@ -131,25 +131,18 @@ export const ConversationPreview: React.FC<ConversationPreviewProps> = ({ conver
   useEffect(() => {
     if (conversation) {
       if (searchTerms && searchTerms.length > 0) {
-        // Scroll to first matching message - search visible content + tool input/output
+        // Scroll to first matching message - search across all text fields
         const matchIndex = filteredMessages.findIndex(msg => {
-          let searchable = '';
-          if (msg.message?.content) searchable += extractMessageText(msg.message.content);
-          if (msg.cwd) searchable += ' ' + msg.cwd;
-          if (msg.message?.content && Array.isArray(msg.message.content)) {
-            for (const item of msg.message.content) {
-              if (item && item.type === 'tool_use' && item.input && typeof item.input === 'object') {
-                searchable += ' ' + JSON.stringify(item.input);
-              }
-            }
-          }
+          const parts: string[] = [];
+          if (msg.message?.content) parts.push(extractMessageText(msg.message.content));
+          if (msg.cwd) parts.push(msg.cwd);
           if (msg.toolUseResult) {
             const r = msg.toolUseResult;
-            if (r.stdout) searchable += ' ' + r.stdout;
-            if (r.stderr) searchable += ' ' + r.stderr;
-            if (r.content) searchable += ' ' + r.content;
+            if (r.stdout) parts.push(r.stdout);
+            if (r.stderr) parts.push(r.stderr);
+            if (r.content) parts.push(r.content);
           }
-          return textContainsTerm(searchable, searchTerms);
+          return textContainsTerm(parts.join(' '), searchTerms);
         });
         if (matchIndex >= 0) {
           // Place the match line near the top of the visible area
@@ -224,26 +217,19 @@ export const ConversationPreview: React.FC<ConversationPreviewProps> = ({ conver
   // Account for borders (2) and padding (2) on each side
   const safeWidth = Math.max(40, terminalWidth - 4);
 
-  // Check if search match exists in any displayed message (including tool input/output)
-  const hasAnyMatch = searchTerms && searchTerms.length > 0 && filteredMessages.some(msg => {
-    let searchable = '';
-    if (msg.message?.content) searchable += extractMessageText(msg.message.content);
-    if (msg.message?.content && Array.isArray(msg.message.content)) {
-      for (const item of msg.message.content) {
-        if (item && item.type === 'tool_use' && item.input && typeof item.input === 'object') {
-          searchable += ' ' + JSON.stringify(item.input);
-        }
-      }
-    }
+  // Check if search match exists in visible messages vs hidden content
+  const hasVisibleMatch = searchTerms && searchTerms.length > 0 && filteredMessages.some(msg => {
+    const parts: string[] = [];
+    if (msg.message?.content) parts.push(extractMessageText(msg.message.content));
     if (msg.toolUseResult) {
       const r = msg.toolUseResult;
-      if (r.stdout) searchable += ' ' + r.stdout;
-      if (r.stderr) searchable += ' ' + r.stderr;
-      if (r.content) searchable += ' ' + r.content;
+      if (r.stdout) parts.push(r.stdout);
+      if (r.stderr) parts.push(r.stderr);
+      if (r.content) parts.push(r.content);
     }
-    return textContainsTerm(searchable, searchTerms);
+    return textContainsTerm(parts.join(' '), searchTerms);
   });
-  const showHiddenMatchHint = searchTerms && searchTerms.length > 0 && !hasAnyMatch;
+  const showHiddenMatchHint = searchTerms && searchTerms.length > 0 && !hasVisibleMatch;
 
 
   return (
@@ -327,78 +313,18 @@ export const ConversationPreview: React.FC<ConversationPreviewProps> = ({ conver
               const headerLength = header.length + 1; // +1 for space
               const availableWidth = safeWidth - headerLength;
 
-              // Build full searchable text: visible content + tool input/output
-              let fullSearchable = content;
-              if (msg.message?.content && Array.isArray(msg.message.content)) {
-                for (const item of msg.message.content) {
-                  if (item && item.type === 'tool_use' && item.input && typeof item.input === 'object') {
-                    fullSearchable += ' ' + JSON.stringify(item.input);
-                  }
-                }
-              }
-              if (msg.toolUseResult) {
-                const r = msg.toolUseResult;
-                if (r.stdout) fullSearchable += ' ' + r.stdout;
-                if (r.stderr) fullSearchable += ' ' + r.stderr;
-                if (r.content) fullSearchable += ' ' + r.content;
-              }
+              const hasMatch = searchTerms && searchTerms.length > 0 && textContainsTerm(content, searchTerms);
 
-              const hasMatch = searchTerms && searchTerms.length > 0 && textContainsTerm(fullSearchable, searchTerms);
-              const matchInVisibleContent = hasMatch && textContainsTerm(content, searchTerms!);
-
-              // Pick the display text
-              let displayText: string;
-              if (hasMatch && !matchInVisibleContent) {
-                // Match is in hidden tool input/output - show a snippet from the full searchable text
-                const lower = fullSearchable.toLowerCase();
-                let matchPos = lower.length;
-                let matchTermLen = 0;
-                for (const term of searchTerms!) {
-                  const pos = lower.indexOf(term);
-                  if (pos !== -1 && pos < matchPos) {
-                    matchPos = pos;
-                    matchTermLen = term.length;
-                  }
-                }
-                const contextBefore = Math.floor((availableWidth - matchTermLen) / 2);
-                const start = Math.max(0, matchPos - contextBefore);
-                const end = Math.min(fullSearchable.length, start + availableWidth);
-                let snippet = fullSearchable.slice(start, end).replace(/[\r\n]+/g, ' ');
-                if (start > 0) snippet = '...' + snippet.slice(3);
-                if (end < fullSearchable.length) snippet = snippet.slice(0, -3) + '...';
-                displayText = snippet;
-              } else if (hasMatch) {
-                // Find the line containing the match
+              // Pick the display line: for search matches, show the line containing the term
+              let displayLine: string;
+              if (hasMatch) {
                 const lines = content.split('\n');
-                const matchingLine = lines.find(l => textContainsTerm(l, searchTerms!)) ?? lines[0];
-
-                // If the matching line is long, extract a snippet centered on the match
-                if (matchingLine.length > availableWidth) {
-                  const lower = matchingLine.toLowerCase();
-                  let matchPos = lower.length;
-                  let matchTermLen = 0;
-                  for (const term of searchTerms!) {
-                    const pos = lower.indexOf(term);
-                    if (pos !== -1 && pos < matchPos) {
-                      matchPos = pos;
-                      matchTermLen = term.length;
-                    }
-                  }
-                  // Center the snippet around the match
-                  const contextBefore = Math.floor((availableWidth - matchTermLen) / 2);
-                  const start = Math.max(0, matchPos - contextBefore);
-                  const end = Math.min(matchingLine.length, start + availableWidth);
-                  let snippet = matchingLine.slice(start, end);
-                  if (start > 0) snippet = '...' + snippet.slice(3);
-                  if (end < matchingLine.length) snippet = snippet.slice(0, -3) + '...';
-                  displayText = snippet;
-                } else {
-                  displayText = matchingLine;
-                }
+                const matchingLine = lines.find(l => textContainsTerm(l, searchTerms!));
+                displayLine = matchingLine ?? lines[0];
               } else {
-                displayText = content.split('\n')[0];
+                displayLine = content.split('\n')[0];
               }
-              const truncatedContent = strictTruncateByWidth(displayText, availableWidth);
+              const truncatedContent = strictTruncateByWidth(displayLine, availableWidth);
 
               // Use a combination of timestamp and index for unique key
               const uniqueKey = `${msg.timestamp}-${scrollOffset + index}`;

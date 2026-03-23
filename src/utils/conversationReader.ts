@@ -136,39 +136,33 @@ export async function getAllConversations(currentDirFilter?: string): Promise<Co
   }
 }
 
-async function readConversation(filePath: string, projectDir: string, searchTerms?: string[]): Promise<Conversation | null> {
+async function readConversation(filePath: string, projectDir: string): Promise<Conversation | null> {
   try {
     const content = await readFile(filePath, 'utf-8');
     const lines = content.trim().split('\n').filter(line => line.trim());
-
+    
     if (lines.length === 0) {
       return null;
     }
-
+    
     // Extract session ID from filename
     const filename = basename(filePath);
     const filenameSessionId = filename.replace('.jsonl', '');
-
+    
     const messages: Message[] = [];
     for (const line of lines) {
       try {
         const data = JSON.parse(line);
         // Only include messages with proper structure
-        // Skip user messages that are tool results (unless they match search terms)
+        // Skip user messages that are tool results
         if (data && data.type && data.message && data.timestamp) {
-          if (data.type === 'user' &&
-              data.message.content &&
-              Array.isArray(data.message.content) &&
+          // Check if it's a user message with tool_result content
+          if (data.type === 'user' && 
+              data.message.content && 
+              Array.isArray(data.message.content) && 
               data.message.content.length > 0 &&
               data.message.content[0].type === 'tool_result') {
-            // Include tool_result if it matches search terms
-            if (searchTerms && searchTerms.length > 0) {
-              const resultText = extractMessageText(data.message.content);
-              const lower = resultText.toLowerCase();
-              if (searchTerms.some(t => lower.includes(t))) {
-                messages.push(data as Message);
-              }
-            }
+            // Skip tool result messages from user
             continue;
           }
           messages.push(data as Message);
@@ -230,12 +224,11 @@ async function readConversation(filePath: string, projectDir: string, searchTerm
 
 // Load specific conversations by file paths
 export async function getConversationsByPaths(
-  filePaths: Array<{ filePath: string; projectDir: string }>,
-  searchTerms?: string[]
+  filePaths: Array<{ filePath: string; projectDir: string }>
 ): Promise<Conversation[]> {
   const conversations: Conversation[] = [];
   for (const { filePath, projectDir } of filePaths) {
-    const conversation = await readConversation(filePath, projectDir, searchTerms);
+    const conversation = await readConversation(filePath, projectDir);
     if (conversation) {
       conversations.push(conversation);
     }

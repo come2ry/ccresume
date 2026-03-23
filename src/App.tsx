@@ -222,7 +222,7 @@ const App: React.FC<AppProps> = ({ claudeArgs = [], currentDirOnly = false, hide
     }
 
     let cancelled = false;
-    getConversationsByPaths(searchPaths, searchMatchTerms).then(convs => {
+    getConversationsByPaths(searchPaths).then(convs => {
       if (!cancelled) {
         setSearchResults(convs);
         setSelectedIndex(0);
