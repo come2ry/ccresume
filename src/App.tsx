@@ -59,6 +59,7 @@ const App: React.FC<AppProps> = ({ claudeArgs = [], currentDirOnly = false, hide
   const [searchMode, setSearchMode] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Conversation[]>([]);
+  const [searchResultsLoading, setSearchResultsLoading] = useState(false);
   const [searchIndex, setSearchIndex] = useState<SearchableSession[] | null>(null);
   const searchIndexRef = useRef<SearchableSession[] | null>(null);
 
@@ -218,13 +219,16 @@ const App: React.FC<AppProps> = ({ claudeArgs = [], currentDirOnly = false, hide
   useEffect(() => {
     if (!searchPaths || searchPaths.length === 0) {
       setSearchResults([]);
+      setSearchResultsLoading(false);
       return;
     }
 
+    setSearchResultsLoading(true);
     let cancelled = false;
     getConversationsByPaths(searchPaths).then(convs => {
       if (!cancelled) {
         setSearchResults(convs);
+        setSearchResultsLoading(false);
         setSelectedIndex(0);
       }
     });
@@ -265,7 +269,8 @@ const App: React.FC<AppProps> = ({ claudeArgs = [], currentDirOnly = false, hide
         return;
       }
       if (key.return) {
-        // Confirm selection from search mode
+        // Confirm selection from search mode (block while results still loading)
+        if (searchResultsLoading) return;
         const selectedConv = activeConversations[selectedIndex];
         if (selectedConv) {
           const commandArgs = [...editedArgs, '--resume', selectedConv.sessionId];
@@ -343,7 +348,10 @@ const App: React.FC<AppProps> = ({ claudeArgs = [], currentDirOnly = false, hide
     const totalPages = Math.ceil(totalCount / ITEMS_PER_PAGE);
 
     if (matchesKeyBinding(input, key, config.keybindings.selectPrevious)) {
-      if (!searchQuery && selectedIndex === 0 && currentPage > 0) {
+      if (searchQuery && selectedIndex === 0) {
+        // At top of search results: move focus to search bar
+        setSearchMode(true);
+      } else if (!searchQuery && selectedIndex === 0 && currentPage > 0) {
         setCurrentPage(prev => prev - 1);
         setSelectedIndex(ITEMS_PER_PAGE - 1);
       } else {
@@ -520,7 +528,7 @@ const App: React.FC<AppProps> = ({ claudeArgs = [], currentDirOnly = false, hide
           conversations={activeConversations}
           selectedIndex={selectedIndex}
           maxVisible={visibleConversations}
-          isLoading={paginating}
+          isLoading={paginating || searchResultsLoading}
           searchSnippets={searchQuery ? searchSnippets : undefined}
           searchTerms={searchQuery ? searchMatchTerms : undefined}
         />

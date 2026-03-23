@@ -24,7 +24,9 @@ export interface SearchResult {
 // Scan the entire file content with global regex
 const CWD_RE = /"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"/;
 const BRANCH_RE = /"gitBranch"\s*:\s*"((?:[^"\\]|\\.)*)"/;
-const TEXT_FIELD_RE = /"text"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+// Match both "text":"..." and "content":"..." (string values only, not arrays)
+// "content" can be a plain string for user messages or a string inside tool_result
+const SEARCHABLE_FIELD_RE = /"(?:text|content)"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
 
 function fastExtractTexts(content: string): string {
   const parts: string[] = [];
@@ -35,11 +37,15 @@ function fastExtractTexts(content: string): string {
   const branchMatch = content.match(BRANCH_RE);
   if (branchMatch) parts.push(unescapeJson(branchMatch[1]));
 
-  // Extract all "text" values in one pass over the entire file
-  TEXT_FIELD_RE.lastIndex = 0;
+  // Extract all "text" and "content" string values in one pass
+  SEARCHABLE_FIELD_RE.lastIndex = 0;
   let match;
-  while ((match = TEXT_FIELD_RE.exec(content)) !== null) {
-    parts.push(unescapeJson(match[1]));
+  while ((match = SEARCHABLE_FIELD_RE.exec(content)) !== null) {
+    const val = match[1];
+    // Skip very short values (type markers like "text", "tool_result", etc.)
+    if (val.length > 2) {
+      parts.push(unescapeJson(val));
+    }
   }
 
   return parts.join(' ');
