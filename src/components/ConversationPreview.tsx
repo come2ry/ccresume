@@ -315,16 +315,40 @@ export const ConversationPreview: React.FC<ConversationPreviewProps> = ({ conver
 
               const hasMatch = searchTerms && searchTerms.length > 0 && textContainsTerm(content, searchTerms);
 
-              // Pick the display line: for search matches, show the line containing the term
-              let displayLine: string;
+              // Pick the display text
+              let displayText: string;
               if (hasMatch) {
+                // Find the line containing the match
                 const lines = content.split('\n');
-                const matchingLine = lines.find(l => textContainsTerm(l, searchTerms!));
-                displayLine = matchingLine ?? lines[0];
+                const matchingLine = lines.find(l => textContainsTerm(l, searchTerms!)) ?? lines[0];
+
+                // If the matching line is long, extract a snippet centered on the match
+                if (matchingLine.length > availableWidth) {
+                  const lower = matchingLine.toLowerCase();
+                  let matchPos = lower.length;
+                  let matchTermLen = 0;
+                  for (const term of searchTerms!) {
+                    const pos = lower.indexOf(term);
+                    if (pos !== -1 && pos < matchPos) {
+                      matchPos = pos;
+                      matchTermLen = term.length;
+                    }
+                  }
+                  // Center the snippet around the match
+                  const contextBefore = Math.floor((availableWidth - matchTermLen) / 2);
+                  const start = Math.max(0, matchPos - contextBefore);
+                  const end = Math.min(matchingLine.length, start + availableWidth);
+                  let snippet = matchingLine.slice(start, end);
+                  if (start > 0) snippet = '...' + snippet.slice(3);
+                  if (end < matchingLine.length) snippet = snippet.slice(0, -3) + '...';
+                  displayText = snippet;
+                } else {
+                  displayText = matchingLine;
+                }
               } else {
-                displayLine = content.split('\n')[0];
+                displayText = content.split('\n')[0];
               }
-              const truncatedContent = strictTruncateByWidth(displayLine, availableWidth);
+              const truncatedContent = strictTruncateByWidth(displayText, availableWidth);
 
               // Use a combination of timestamp and index for unique key
               const uniqueKey = `${msg.timestamp}-${scrollOffset + index}`;
