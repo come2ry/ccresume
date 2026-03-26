@@ -4,7 +4,10 @@ import { ConversationList } from './components/ConversationList.js';
 import { ConversationPreview } from './components/ConversationPreview.js';
 import { ConversationPreviewFull } from './components/ConversationPreviewFull.js';
 import { CommandEditor } from './components/CommandEditor.js';
-import { getPaginatedConversations } from './utils/conversationReader.js';
+import { SearchBar } from './components/SearchBar.js';
+import { getPaginatedConversations, getConversationsByPaths } from './utils/conversationReader.js';
+import { buildAllSessionIndexes, searchSessions } from './utils/searchIndex.js';
+import type { SearchableSession } from './utils/searchIndex.js';
 import { spawn } from 'child_process';
 import clipboardy from 'clipboardy';
 import type { Conversation } from './types.js';
@@ -31,6 +34,7 @@ const DEFAULT_TERMINAL_WIDTH = 80;
 const DEFAULT_TERMINAL_HEIGHT = 24;
 const EXECUTE_DELAY_MS = 500; // Delay before executing command to show status
 const STATUS_MESSAGE_DURATION_MS = 2000; // Duration to show status messages
+const SEARCH_MAX_RESULTS = 30;
 
 const App: React.FC<AppProps> = ({ claudeArgs = [], currentDirOnly = false, hideOptions = [] }) => {
   const { exit } = useApp();
@@ -50,6 +54,25 @@ const App: React.FC<AppProps> = ({ claudeArgs = [], currentDirOnly = false, hide
   const [currentPage, setCurrentPage] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
   const [paginating, setPaginating] = useState(false);
+
+  // Search state
+  const [searchMode, setSearchMode] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<Conversation[]>([]);
+  const [searchResultsLoading, setSearchResultsLoading] = useState(false);
+  const [searchIndex, setSearchIndex] = useState<SearchableSession[] | null>(null);
+  const searchIndexRef = useRef<SearchableSession[] | null>(null);
+
+  // Lazy-load search index: start building only when search mode is first activated
+  const indexLoadStarted = useRef(false);
+  useEffect(() => {
+    if (!searchMode || indexLoadStarted.current) return;
+    indexLoadStarted.current = true;
+    buildAllSessionIndexes().then(sessions => {
+      searchIndexRef.current = sessions;
+      setSearchIndex(sessions);
+    });
+  }, [searchMode]);
 
   useEffect(() => {
     // Update dimensions on terminal resize
@@ -164,6 +187,56 @@ const App: React.FC<AppProps> = ({ claudeArgs = [], currentDirOnly = false, hide
     }
   }, [currentPage, currentDirOnly]);
 
+  // Compute search filtering synchronously
+  const { searchSnippets, searchMatchTerms, searchPaths, searchIndexLoading } = useMemo(() => {
+    const empty = {
+      searchSnippets: new Map<string, string>(),
+      searchMatchTerms: [] as string[],
+      searchPaths: null as Array<{ filePath: string; projectDir: string }> | null,
+      searchIndexLoading: false,
+    };
+    if (!searchQuery.trim()) return empty;
+    if (!searchIndex) return { ...empty, searchIndexLoading: true };
+
+    const results = searchSessions(searchIndex, searchQuery, SEARCH_MAX_RESULTS);
+    const snippetMap = new Map<string, string>();
+    for (const r of results) {
+      snippetMap.set(r.session.sessionId, r.snippet);
+    }
+    return {
+      searchSnippets: snippetMap,
+      searchMatchTerms: results.length > 0 ? results[0].matchTerms : [],
+      searchPaths: results.map(r => ({
+        filePath: r.session.filePath,
+        projectDir: r.session.projectDir,
+      })),
+      searchIndexLoading: false,
+    };
+  }, [searchQuery, searchIndex]);
+
+  // Async effect: load full Conversation objects for search results
+  const searchPathsKey = searchPaths ? searchPaths.map(p => p.filePath).join(',') : '';
+  useEffect(() => {
+    if (!searchPaths || searchPaths.length === 0) {
+      setSearchResults([]);
+      setSearchResultsLoading(false);
+      return;
+    }
+
+    setSearchResultsLoading(true);
+    let cancelled = false;
+    getConversationsByPaths(searchPaths).then(convs => {
+      if (!cancelled) {
+        setSearchResults(convs);
+        setSearchResultsLoading(false);
+        setSelectedIndex(0);
+      }
+    });
+
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchPathsKey]);
+
   const prevPageRef = useRef(0);
   
   useEffect(() => {
@@ -173,18 +246,92 @@ const App: React.FC<AppProps> = ({ claudeArgs = [], currentDirOnly = false, hide
     void loadConversations(isPaginating);
   }, [currentPage, loadConversations]);
 
+  // Determine which list to show based on search state
+  const activeConversations = searchQuery.trim() ? searchResults : conversations;
+
   useInput((input, key) => {
     // Don't process any input when command editor is shown
     if (showCommandEditor) return;
-    
+
+    // --- Search mode: capture all input for text entry ---
+    if (searchMode) {
+      if (key.downArrow) {
+        // Exit search mode, keep query and results, move focus to list
+        setSearchMode(false);
+        return;
+      }
+      if (key.escape) {
+        // Clear search entirely
+        setSearchMode(false);
+        setSearchQuery('');
+        setSearchResults([]);
+        setSelectedIndex(0);
+        return;
+      }
+      if (key.return) {
+        // Confirm selection from search mode (block while results still loading)
+        if (searchResultsLoading) return;
+        const selectedConv = activeConversations[selectedIndex];
+        if (selectedConv) {
+          const commandArgs = [...editedArgs, '--resume', selectedConv.sessionId];
+          const commandStr = `claude ${commandArgs.join(' ')}`;
+          executeClaudeCommand(
+            selectedConv,
+            commandArgs,
+            `Executing: ${commandStr}`,
+            'resume'
+          );
+        }
+        return;
+      }
+      if (key.backspace || key.delete) {
+        if (searchQuery.length > 0) {
+          setSearchQuery(prev => prev.slice(0, -1));
+        } else {
+          setSearchMode(false);
+        }
+        return;
+      }
+      // All other input captured as search text (j, k, n, -, etc.)
+      if (input && !key.ctrl && !key.meta) {
+        setSearchQuery(prev => prev + input);
+        return;
+      }
+      return;
+    }
+
+    // --- Normal mode ---
+
+    // '/' to enter search mode (re-enter if query exists)
+    if (input === '/') {
+      setSearchMode(true);
+      return;
+    }
+
+    // Esc in normal mode: if search query exists, clear it; otherwise ignore
+    if (key.escape) {
+      if (searchQuery) {
+        setSearchQuery('');
+        setSearchResults([]);
+        setSelectedIndex(0);
+      }
+      return;
+    }
+
     if (matchesKeyBinding(input, key, config.keybindings.quit)) {
+      if (searchQuery) {
+        // q clears search first
+        setSearchQuery('');
+        setSearchResults([]);
+        setSelectedIndex(0);
+        return;
+      }
       exit();
     }
 
     // Handle full view toggle first
     if (matchesKeyBinding(input, key, config.keybindings.toggleFullView)) {
       setShowFullView(prev => !prev);
-      // Show temporary status message
       setStatusMessage(showFullView ? 'Switched to normal view' : 'Switched to full view');
       setTimeout(() => setStatusMessage(null), STATUS_MESSAGE_DURATION_MS);
       return;
@@ -195,56 +342,57 @@ const App: React.FC<AppProps> = ({ claudeArgs = [], currentDirOnly = false, hide
       return;
     }
 
-    if (loading || conversations.length === 0) return;
+    if (loading || activeConversations.length === 0) return;
 
     // Calculate pagination values
     const totalPages = Math.ceil(totalCount / ITEMS_PER_PAGE);
-    
+
     if (matchesKeyBinding(input, key, config.keybindings.selectPrevious)) {
-      if (selectedIndex === 0 && currentPage > 0) {
-        // Auto-navigate to previous page when at first item
+      if (searchQuery && selectedIndex === 0) {
+        // At top of search results: move focus to search bar
+        setSearchMode(true);
+      } else if (!searchQuery && selectedIndex === 0 && currentPage > 0) {
         setCurrentPage(prev => prev - 1);
-        setSelectedIndex(ITEMS_PER_PAGE - 1); // Select last item of previous page
+        setSelectedIndex(ITEMS_PER_PAGE - 1);
       } else {
         setSelectedIndex((prev) => Math.max(0, prev - 1));
       }
     }
-    
+
     if (matchesKeyBinding(input, key, config.keybindings.selectNext)) {
-      const maxIndex = conversations.length - 1;
-      const canGoNext = totalCount === -1 ? conversations.length === ITEMS_PER_PAGE : currentPage < totalPages - 1;
+      const maxIndex = activeConversations.length - 1;
+      const canGoNext = !searchQuery && (totalCount === -1 ? activeConversations.length === ITEMS_PER_PAGE : currentPage < totalPages - 1);
       if (selectedIndex === maxIndex && canGoNext) {
-        // Auto-navigate to next page when at last item
         setCurrentPage(prev => prev + 1);
-        setSelectedIndex(0); // Select first item of next page
+        setSelectedIndex(0);
       } else {
         setSelectedIndex((prev) => Math.min(maxIndex, prev + 1));
       }
     }
-    
-    // Page navigation with arrow keys and n/p
-    if (matchesKeyBinding(input, key, config.keybindings.pageNext)) {
-      // For unknown total (-1), allow next if we got full page
-      if (totalCount === -1 ? conversations.length === ITEMS_PER_PAGE : currentPage < totalPages - 1) {
-        setCurrentPage(prev => prev + 1);
-        setSelectedIndex(0); // Reset selection to first item of new page
+
+    // Page navigation (disabled in search mode)
+    if (!searchQuery) {
+      if (matchesKeyBinding(input, key, config.keybindings.pageNext)) {
+        if (totalCount === -1 ? activeConversations.length === ITEMS_PER_PAGE : currentPage < totalPages - 1) {
+          setCurrentPage(prev => prev + 1);
+          setSelectedIndex(0);
+        }
+      }
+
+      if (matchesKeyBinding(input, key, config.keybindings.pagePrevious) && currentPage > 0) {
+        setCurrentPage(prev => prev - 1);
+        setSelectedIndex(0);
       }
     }
-    
-    if (matchesKeyBinding(input, key, config.keybindings.pagePrevious) && currentPage > 0) {
-      setCurrentPage(prev => prev - 1);
-      setSelectedIndex(0); // Reset selection to first item of new page
-    }
-    
 
     if (matchesKeyBinding(input, key, config.keybindings.confirm)) {
-      const selectedConv = conversations[selectedIndex];
+      const selectedConv = activeConversations[selectedIndex];
       if (selectedConv) {
         const commandArgs = [...editedArgs, '--resume', selectedConv.sessionId];
         const commandStr = `claude ${commandArgs.join(' ')}`;
         executeClaudeCommand(
-          selectedConv, 
-          commandArgs, 
+          selectedConv,
+          commandArgs,
           `Executing: ${commandStr}`,
           'resume'
         );
@@ -252,12 +400,10 @@ const App: React.FC<AppProps> = ({ claudeArgs = [], currentDirOnly = false, hide
     }
 
     if (matchesKeyBinding(input, key, config.keybindings.copySessionId)) {
-      // Copy session ID to clipboard
-      const selectedConv = conversations[selectedIndex];
+      const selectedConv = activeConversations[selectedIndex];
       if (selectedConv) {
         try {
           clipboardy.writeSync(selectedConv.sessionId);
-          // Show temporary status message
           setStatusMessage('✓ Session ID copied to clipboard!');
           setTimeout(() => setStatusMessage(null), STATUS_MESSAGE_DURATION_MS);
         } catch {
@@ -268,8 +414,7 @@ const App: React.FC<AppProps> = ({ claudeArgs = [], currentDirOnly = false, hide
     }
 
     if (matchesKeyBinding(input, key, config.keybindings.startNewSession)) {
-      // Start new session without resuming
-      const selectedConv = conversations[selectedIndex];
+      const selectedConv = activeConversations[selectedIndex];
       if (selectedConv) {
         const commandArgs = [...editedArgs];
         executeClaudeCommand(
@@ -304,17 +449,19 @@ const App: React.FC<AppProps> = ({ claudeArgs = [], currentDirOnly = false, hide
   }
 
   // Get the selected conversation
-  const selectedConversation = conversations[selectedIndex] || null;
-  
+  const selectedConversation = activeConversations[selectedIndex] || null;
+
   const totalPages = Math.ceil(totalCount / ITEMS_PER_PAGE);
   
   // Calculate heights for fixed layout
-  const headerHeight = HEADER_HEIGHT;
+  const isSearchActive = searchMode || !!searchQuery;
+  const searchBarHeight = isSearchActive ? 1 : 0;
+  const headerHeight = HEADER_HEIGHT + searchBarHeight;
   const listMaxHeight = LIST_MAX_HEIGHT;
-  const visibleConversations = Math.min(MAX_VISIBLE_CONVERSATIONS, conversations.length);
+  const visibleConversations = Math.min(MAX_VISIBLE_CONVERSATIONS, activeConversations.length);
   // List height calculation: 
   // LIST_BASE_HEIGHT includes borders (2) + title (1)
-  const needsMoreIndicator = conversations.length > visibleConversations ? 1 : 0;
+  const needsMoreIndicator = activeConversations.length > visibleConversations ? 1 : 0;
   const listHeight = Math.min(listMaxHeight, LIST_BASE_HEIGHT + visibleConversations + needsMoreIndicator);
   
   // Add safety margin to prevent exceeding terminal height
@@ -346,11 +493,13 @@ const App: React.FC<AppProps> = ({ claudeArgs = [], currentDirOnly = false, hide
         <Text bold color="cyan">ccresume - Claude Code Conversation Browser</Text>
         <Box>
           <Text dimColor>
-            {(() => {
+            {searchQuery ? (
+              <>{activeConversations.length} results | /: search  Esc: clear</>
+            ) : (() => {
               const prevKeys = config?.keybindings.pagePrevious.map(k => k === 'left' ? '←' : k).join('/') || '←';
               const nextKeys = config?.keybindings.pageNext.map(k => k === 'right' ? '→' : k).join('/') || '→';
-              const pageHelp = `Press ${prevKeys}/${nextKeys} for pages`;
-              
+              const pageHelp = `Press ${prevKeys}/${nextKeys} for pages, /: search`;
+
               return totalCount === -1 ? (
                 <>Page {currentPage + 1} | {pageHelp}</>
               ) : (
@@ -362,19 +511,31 @@ const App: React.FC<AppProps> = ({ claudeArgs = [], currentDirOnly = false, hide
             <Text color="yellow"> | Options: {editedArgs.join(' ')}</Text>
           )}
         </Box>
+        {isSearchActive && (
+          <SearchBar
+            query={searchQuery}
+            isActive={searchMode}
+            resultCount={searchResults.length}
+            totalCount={searchIndex?.length ?? 0}
+            maxResults={SEARCH_MAX_RESULTS}
+            isLoading={searchIndexLoading}
+          />
+        )}
       </Box>
       
       <Box height={listHeight}>
-        <ConversationList 
-          conversations={conversations} 
+        <ConversationList
+          conversations={activeConversations}
           selectedIndex={selectedIndex}
           maxVisible={visibleConversations}
-          isLoading={paginating}
+          isLoading={paginating || searchResultsLoading}
+          searchSnippets={searchQuery ? searchSnippets : undefined}
+          searchTerms={searchQuery ? searchMatchTerms : undefined}
         />
       </Box>
       
       <Box height={previewHeight}>
-        <ConversationPreview conversation={selectedConversation} statusMessage={statusMessage} hideOptions={hideOptions} />
+        <ConversationPreview conversation={selectedConversation} statusMessage={statusMessage} hideOptions={hideOptions} searchTerms={searchQuery ? searchMatchTerms : undefined} inputDisabled={searchMode} />
       </Box>
       
       {/* Bottom margin to absorb any overflow */}

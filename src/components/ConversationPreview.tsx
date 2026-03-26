@@ -9,13 +9,60 @@ import { matchesKeyBinding } from '../utils/keyBindingHelper.js';
 import { getShortcutText, hasKeyConflict } from '../utils/shortcutHelper.js';
 import type { Config } from '../types/config.js';
 
+interface HighlightSegment {
+  text: string;
+  isMatch: boolean;
+}
+
+function splitByTerms(text: string, terms: string[]): HighlightSegment[] {
+  if (terms.length === 0) return [{ text, isMatch: false }];
+
+  const segments: HighlightSegment[] = [];
+  const lower = text.toLowerCase();
+  let pos = 0;
+
+  while (pos < text.length) {
+    let earliest = text.length;
+    let matchLen = 0;
+    for (const term of terms) {
+      const idx = lower.indexOf(term, pos);
+      if (idx !== -1 && idx < earliest) {
+        earliest = idx;
+        matchLen = term.length;
+      }
+    }
+
+    if (earliest === text.length) {
+      segments.push({ text: text.slice(pos), isMatch: false });
+      break;
+    }
+
+    if (earliest > pos) {
+      segments.push({ text: text.slice(pos, earliest), isMatch: false });
+    }
+
+    segments.push({ text: text.slice(earliest, earliest + matchLen), isMatch: true });
+    pos = earliest + matchLen;
+  }
+
+  return segments;
+}
+
+function textContainsTerm(text: string, terms: string[]): boolean {
+  const lower = text.toLowerCase();
+  return terms.some(term => lower.includes(term));
+}
+
 interface ConversationPreviewProps {
   conversation: Conversation | null;
   statusMessage?: string | null;
   hideOptions?: string[];
+  searchTerms?: string[];
+  inputDisabled?: boolean;
 }
 
-export const ConversationPreview: React.FC<ConversationPreviewProps> = ({ conversation, statusMessage, hideOptions = [] }) => {
+const EMPTY_HIDE_OPTIONS: string[] = [];
+export const ConversationPreview: React.FC<ConversationPreviewProps> = ({ conversation, statusMessage, hideOptions = EMPTY_HIDE_OPTIONS, searchTerms, inputDisabled = false }) => {
   const { stdout } = useStdout();
   const [scrollOffset, setScrollOffset] = useState(0);
   const terminalWidth = stdout?.columns || 80;
@@ -43,8 +90,8 @@ export const ConversationPreview: React.FC<ConversationPreviewProps> = ({ conver
     return Math.max(5, calculatedHeight);
   }, [stdout?.rows]);
 
-  // Filter messages based on hideOptions
-  const filteredMessages = conversation ? conversation.messages.filter(msg => {
+  // Filter messages based on hideOptions (memoized for stable reference)
+  const filteredMessages = useMemo(() => conversation ? conversation.messages.filter(msg => {
     if (!msg || (!msg.message && !msg.toolUseResult)) {
       return false;
     }
@@ -79,22 +126,46 @@ export const ConversationPreview: React.FC<ConversationPreviewProps> = ({ conver
     }
     
     return true;
-  }) : [];
+  }) : [], [conversation, hideOptions]);
 
   useEffect(() => {
-    // When conversation changes, scroll to the bottom (most recent messages)
     if (conversation) {
-      const totalMessages = filteredMessages.length;
-      const maxOffset = Math.max(0, totalMessages - maxVisibleMessages);
-      startTransition(() => setScrollOffset(maxOffset));
+      if (searchTerms && searchTerms.length > 0) {
+        // Scroll to first matching message - search across all text fields
+        const matchIndex = filteredMessages.findIndex(msg => {
+          const parts: string[] = [];
+          if (msg.message?.content) parts.push(extractMessageText(msg.message.content));
+          if (msg.cwd) parts.push(msg.cwd);
+          if (msg.toolUseResult) {
+            const r = msg.toolUseResult;
+            if (r.stdout) parts.push(r.stdout);
+            if (r.stderr) parts.push(r.stderr);
+            if (r.content) parts.push(r.content);
+          }
+          return textContainsTerm(parts.join(' '), searchTerms);
+        });
+        if (matchIndex >= 0) {
+          // Place the match line near the top of the visible area
+          const totalMessages = filteredMessages.length;
+          const maxOffset = Math.max(0, totalMessages - maxVisibleMessages);
+          startTransition(() => setScrollOffset(Math.min(matchIndex, maxOffset)));
+        } else {
+          startTransition(() => setScrollOffset(0));
+        }
+      } else {
+        // Default: scroll to the bottom (most recent messages)
+        const totalMessages = filteredMessages.length;
+        const maxOffset = Math.max(0, totalMessages - maxVisibleMessages);
+        startTransition(() => setScrollOffset(maxOffset));
+      }
     } else {
       startTransition(() => setScrollOffset(0));
     }
-  }, [conversation, filteredMessages.length, maxVisibleMessages]);
+  }, [conversation, filteredMessages, maxVisibleMessages, searchTerms]);
 
 
   useInput((input, key) => {
-    if (!conversation) return;
+    if (!conversation || inputDisabled) return;
     
     const totalMessages = filteredMessages.length;
     const maxOffset = Math.max(0, totalMessages - maxVisibleMessages);
@@ -139,12 +210,13 @@ export const ConversationPreview: React.FC<ConversationPreviewProps> = ({ conver
   const messageCount = filteredMessages.length;
   const duration = conversation.endTime.getTime() - conversation.startTime.getTime();
   const durationMinutes = Math.round(duration / 1000 / 60);
-  
+
   const visibleMessages = filteredMessages.slice(scrollOffset, scrollOffset + maxVisibleMessages);
-  
+
   // Calculate safe width for text wrapping
   // Account for borders (2) and padding (2) on each side
   const safeWidth = Math.max(40, terminalWidth - 4);
+
 
 
   return (
@@ -164,10 +236,11 @@ export const ConversationPreview: React.FC<ConversationPreviewProps> = ({ conver
           <Text bold>Directory: </Text>
           <Text>{strictTruncateByWidth(conversation.projectPath, safeWidth - 12)}</Text>
         </Box>
-        <Box marginBottom={1}>
+        <Box>
           <Text bold>Branch: </Text>
           <Text>{strictTruncateByWidth(conversation.gitBranch || '-', safeWidth - 9)}</Text>
         </Box>
+        <Box marginBottom={1} />
       </Box>
 
       {/* Messages area with inner border */}
@@ -218,15 +291,48 @@ export const ConversationPreview: React.FC<ConversationPreviewProps> = ({ conver
               const timeText = format(timestamp, 'HH:mm:ss');
               const header = `[${roleText}] (${timeText})`;
               
-              // Get first line of content and truncate
-              const firstLine = content.split('\n')[0];
               const headerLength = header.length + 1; // +1 for space
               const availableWidth = safeWidth - headerLength;
-              const truncatedContent = strictTruncateByWidth(firstLine, availableWidth);
-              
+
+              const hasMatch = searchTerms && searchTerms.length > 0 && textContainsTerm(content, searchTerms);
+
+              // Pick the display line: for search matches, show the line containing the term
+              let displayLine: string;
+              if (hasMatch) {
+                const lines = content.split('\n');
+                const matchingLine = lines.find(l => textContainsTerm(l, searchTerms!));
+                displayLine = matchingLine ?? lines[0];
+              } else {
+                displayLine = content.split('\n')[0];
+              }
+              const truncatedContent = strictTruncateByWidth(displayLine, availableWidth);
+
               // Use a combination of timestamp and index for unique key
               const uniqueKey = `${msg.timestamp}-${scrollOffset + index}`;
-              
+
+              if (hasMatch) {
+                const segments = splitByTerms(truncatedContent, searchTerms!);
+                return (
+                  <Box key={uniqueKey}>
+                    <Text>
+                      <Text color={isUser ? 'cyan' : 'green'} bold>{header}</Text>
+                      <Text> </Text>
+                    </Text>
+                    {segments.map((seg, i) => (
+                      <Text
+                        key={i}
+                        backgroundColor={seg.isMatch ? 'yellow' : undefined}
+                        color={seg.isMatch ? 'black' : (isToolMessage ? 'yellow' : undefined)}
+                        bold={seg.isMatch}
+                        dimColor={isToolMessage && !seg.isMatch}
+                      >
+                        {seg.text}
+                      </Text>
+                    ))}
+                  </Box>
+                );
+              }
+
               return (
                 <Box key={uniqueKey}>
                   <Text>
