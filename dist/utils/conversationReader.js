@@ -1,0 +1,224 @@
+import { readdir, readFile, stat } from 'fs/promises';
+import { join, sep, basename } from 'path';
+import { homedir } from 'os';
+import { extractMessageText } from './messageUtils.js';
+const CLAUDE_PROJECTS_DIR = join(homedir(), '.claude', 'projects');
+// Helper function to convert project path to Claude directory name
+function pathToClaudeDir(path) {
+    // Claude's conversion: / or \ becomes -, and . also becomes -
+    return path.replace(/[/\\.]/g, '-');
+}
+// Get paginated conversations with lazy loading
+export async function getPaginatedConversations(options) {
+    // First, just get file paths and stats without reading content
+    const allFiles = [];
+    try {
+        const projectDirs = await readdir(CLAUDE_PROJECTS_DIR);
+        // If filtering by directory, convert the filter path to Claude's directory name format
+        const targetDir = options.currentDirFilter ? pathToClaudeDir(options.currentDirFilter) : null;
+        for (const projectDir of projectDirs) {
+            // Skip directories that don't match the filter early
+            if (targetDir && projectDir !== targetDir) {
+                continue;
+            }
+            const projectPath = join(CLAUDE_PROJECTS_DIR, projectDir);
+            // ENOTDIR: entry is a plain file or symlink-to-file (e.g. claude-code-log's .db/.html).
+            // ENOENT: entry is a broken symlink (target missing). Skip both silently;
+            // symlink-to-dir works fine because readdir follows the link.
+            let dirFiles;
+            try {
+                dirFiles = await readdir(projectPath);
+            }
+            catch (err) {
+                const code = err.code;
+                if (code === 'ENOTDIR' || code === 'ENOENT') {
+                    continue;
+                }
+                throw err;
+            }
+            const jsonlFiles = dirFiles.filter(f => f.endsWith('.jsonl') &&
+                /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$/i.test(f));
+            for (const file of jsonlFiles) {
+                const filePath = join(projectPath, file);
+                const stats = await stat(filePath);
+                allFiles.push({
+                    path: filePath,
+                    dir: projectDir,
+                    mtime: stats.mtime
+                });
+            }
+        }
+    }
+    catch (error) {
+        if (error.code === 'ENOENT') {
+            return { conversations: [], total: 0 };
+        }
+        throw error;
+    }
+    // Sort by modification time (newest first)
+    allFiles.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+    const conversations = [];
+    let skippedCount = 0;
+    let fileIndex = 0;
+    // Skip files based on offset
+    while (skippedCount < options.offset && fileIndex < allFiles.length) {
+        const file = allFiles[fileIndex];
+        const conversation = await readConversation(file.path, file.dir);
+        if (conversation) {
+            skippedCount++;
+        }
+        fileIndex++;
+    }
+    // Collect conversations for the current page
+    while (conversations.length < options.limit && fileIndex < allFiles.length) {
+        const file = allFiles[fileIndex];
+        const conversation = await readConversation(file.path, file.dir);
+        if (conversation) {
+            conversations.push(conversation);
+        }
+        fileIndex++;
+    }
+    // For total count, we'll return -1 to indicate unknown
+    // The UI can handle this by not showing total pages
+    return { conversations, total: -1 };
+}
+export async function getAllConversations(currentDirFilter) {
+    const conversations = [];
+    try {
+        const projectDirs = await readdir(CLAUDE_PROJECTS_DIR);
+        for (const projectDir of projectDirs) {
+            const projectPath = join(CLAUDE_PROJECTS_DIR, projectDir);
+            // ENOTDIR: entry is a plain file or symlink-to-file (e.g. claude-code-log's .db/.html).
+            // ENOENT: entry is a broken symlink (target missing). Skip both silently;
+            // symlink-to-dir works fine because readdir follows the link.
+            let files;
+            try {
+                files = await readdir(projectPath);
+            }
+            catch (err) {
+                const code = err.code;
+                if (code === 'ENOTDIR' || code === 'ENOENT') {
+                    continue;
+                }
+                throw err;
+            }
+            const jsonlFiles = files.filter(f => f.endsWith('.jsonl'));
+            for (const file of jsonlFiles) {
+                const filePath = join(projectPath, file);
+                const conversation = await readConversation(filePath, projectDir);
+                if (conversation) {
+                    conversations.push(conversation);
+                }
+            }
+        }
+        // Filter by current directory if specified
+        let filteredConversations = conversations;
+        if (currentDirFilter) {
+            filteredConversations = conversations.filter(conv => conv.projectPath === currentDirFilter);
+        }
+        const result = filteredConversations
+            .sort((a, b) => b.endTime.getTime() - a.endTime.getTime());
+        return result;
+    }
+    catch (error) {
+        if (error.code === 'ENOENT') {
+            return [];
+        }
+        throw error;
+    }
+}
+async function readConversation(filePath, projectDir) {
+    try {
+        const content = await readFile(filePath, 'utf-8');
+        const lines = content.trim().split('\n').filter(line => line.trim());
+        if (lines.length === 0) {
+            return null;
+        }
+        // Extract session ID from filename
+        const filename = basename(filePath);
+        const filenameSessionId = filename.replace('.jsonl', '');
+        const messages = [];
+        for (const line of lines) {
+            try {
+                const data = JSON.parse(line);
+                // Only include messages with proper structure
+                // Skip user messages that are tool results
+                if (data && data.type && data.message && data.timestamp) {
+                    // Check if it's a user message with tool_result content
+                    if (data.type === 'user' &&
+                        data.message.content &&
+                        Array.isArray(data.message.content) &&
+                        data.message.content.length > 0 &&
+                        data.message.content[0].type === 'tool_result') {
+                        // Skip tool result messages from user
+                        continue;
+                    }
+                    messages.push(data);
+                }
+            }
+            catch {
+                continue;
+            }
+        }
+        if (messages.length === 0) {
+            return null;
+        }
+        const userMessages = messages.filter(m => m.type === 'user');
+        const projectName = projectDir.replace(/^-/, '').split('-').join(sep);
+        const startTime = new Date(messages[0].timestamp);
+        const endTime = new Date(messages[messages.length - 1].timestamp);
+        // Use session ID from filename as it's what Claude expects for --resume
+        const sessionId = filenameSessionId;
+        const projectPath = messages[0].cwd || '';
+        // Get gitBranch from the last line of the jsonl file
+        // Branch info is stored in the last line by newer versions of Claude Code
+        let gitBranch = null;
+        try {
+            const lastLine = lines[lines.length - 1];
+            const lastData = JSON.parse(lastLine);
+            if (lastData.gitBranch !== undefined) {
+                // Preserve null/empty string values explicitly
+                gitBranch = lastData.gitBranch === null || lastData.gitBranch === '' ? '-' : lastData.gitBranch;
+            }
+            else {
+                gitBranch = '-';
+            }
+        }
+        catch {
+            gitBranch = '-';
+        }
+        return {
+            sessionId,
+            projectPath,
+            projectName,
+            gitBranch,
+            messages,
+            firstMessage: userMessages.length > 0 ? extractMessageText(userMessages[0].message?.content) : '',
+            lastMessage: userMessages.length > 0 ? extractMessageText(userMessages[userMessages.length - 1].message?.content) : '',
+            startTime,
+            endTime
+        };
+    }
+    catch (error) {
+        console.error(`Error reading conversation file ${filePath}:`, error);
+        return null;
+    }
+}
+// Load specific conversations by file paths
+export async function getConversationsByPaths(filePaths) {
+    const conversations = [];
+    for (const { filePath, projectDir } of filePaths) {
+        const conversation = await readConversation(filePath, projectDir);
+        if (conversation) {
+            conversations.push(conversation);
+        }
+    }
+    return conversations;
+}
+export function formatConversationSummary(conversation) {
+    const firstMessagePreview = conversation.firstMessage
+        .replace(/\n/g, ' ')
+        .substring(0, 80)
+        .trim();
+    return `${firstMessagePreview}${conversation.firstMessage.length > 80 ? '...' : ''}`;
+}

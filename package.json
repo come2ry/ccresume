@@ -11,7 +11,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/cli.tsx",
-    "prepare": "npm run build",
+    "prepublishOnly": "npm run build",
     "lint": "eslint src --ext .ts,.tsx",
     "typecheck": "tsc --noEmit",
     "test": "NODE_OPTIONS='--experimental-vm-modules' jest",
