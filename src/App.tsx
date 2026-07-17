@@ -58,8 +58,10 @@ const App: React.FC<AppProps> = ({ claudeArgs = [], currentDirOnly = false, hide
   // Search state
   const [searchMode, setSearchMode] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<Conversation[]>([]);
-  const [searchResultsLoading, setSearchResultsLoading] = useState(false);
+  const [loadedSearchResults, setLoadedSearchResults] = useState<{
+    key: string;
+    conversations: Conversation[];
+  }>({ key: '', conversations: [] });
   const [searchIndex, setSearchIndex] = useState<SearchableSession[] | null>(null);
   const searchIndexRef = useRef<SearchableSession[] | null>(null);
 
@@ -217,18 +219,12 @@ const App: React.FC<AppProps> = ({ claudeArgs = [], currentDirOnly = false, hide
   // Async effect: load full Conversation objects for search results
   const searchPathsKey = searchPaths ? searchPaths.map(p => p.filePath).join(',') : '';
   useEffect(() => {
-    if (!searchPaths || searchPaths.length === 0) {
-      setSearchResults([]);
-      setSearchResultsLoading(false);
-      return;
-    }
+    if (!searchPaths || searchPaths.length === 0) return;
 
-    setSearchResultsLoading(true);
     let cancelled = false;
     getConversationsByPaths(searchPaths).then(convs => {
       if (!cancelled) {
-        setSearchResults(convs);
-        setSearchResultsLoading(false);
+        setLoadedSearchResults({ key: searchPathsKey, conversations: convs });
         setSelectedIndex(0);
       }
     });
@@ -236,6 +232,12 @@ const App: React.FC<AppProps> = ({ claudeArgs = [], currentDirOnly = false, hide
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchPathsKey]);
+
+  const searchResults = loadedSearchResults.key === searchPathsKey
+    ? loadedSearchResults.conversations
+    : [];
+  const searchResultsLoading = Boolean(searchPaths?.length)
+    && loadedSearchResults.key !== searchPathsKey;
 
   const prevPageRef = useRef(0);
   
@@ -264,7 +266,6 @@ const App: React.FC<AppProps> = ({ claudeArgs = [], currentDirOnly = false, hide
         // Clear search entirely
         setSearchMode(false);
         setSearchQuery('');
-        setSearchResults([]);
         setSelectedIndex(0);
         return;
       }
@@ -312,7 +313,6 @@ const App: React.FC<AppProps> = ({ claudeArgs = [], currentDirOnly = false, hide
     if (key.escape) {
       if (searchQuery) {
         setSearchQuery('');
-        setSearchResults([]);
         setSelectedIndex(0);
       }
       return;
@@ -322,7 +322,6 @@ const App: React.FC<AppProps> = ({ claudeArgs = [], currentDirOnly = false, hide
       if (searchQuery) {
         // q clears search first
         setSearchQuery('');
-        setSearchResults([]);
         setSelectedIndex(0);
         return;
       }

@@ -1,5 +1,5 @@
 {
-  "name": "@sasazame/ccresume",
+  "name": "@come2ry/ccresume",
   "version": "2.0.0",
   "description": "A TUI tool for browsing and resuming Claude Code conversations",
   "type": "module",
@@ -29,12 +29,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sasazame/ccresume.git"
+    "url": "git+https://github.com/come2ry/ccresume.git"
   },
   "bugs": {
-    "url": "https://github.com/sasazame/ccresume/issues"
+    "url": "https://github.com/come2ry/ccresume/issues"
   },
-  "homepage": "https://github.com/sasazame/ccresume#readme",
+  "homepage": "https://github.com/come2ry/ccresume#readme",
   "publishConfig": {
     "access": "public"
   },

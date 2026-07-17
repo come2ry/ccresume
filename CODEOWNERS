@@ -3,23 +3,23 @@
 # Later matches take precedence
 
 # Default owner for everything in the repo
-* @sasazame
+* @come2ry
 
 # Documentation
-*.md @sasazame
-docs/ @sasazame
+*.md @come2ry
+docs/ @come2ry
 
 # CI/CD configuration
-.github/ @sasazame
-*.yml @sasazame
-*.yaml @sasazame
+.github/ @come2ry
+*.yml @come2ry
+*.yaml @come2ry
 
 # Source code
-src/ @sasazame
-tests/ @sasazame
+src/ @come2ry
+tests/ @come2ry
 
 # Configuration files
-package.json @sasazame
-tsconfig.json @sasazame
-.eslintrc* @sasazame
-.prettierrc* @sasazame
+package.json @come2ry
+tsconfig.json @come2ry
+.eslintrc* @come2ry
+.prettierrc* @come2ry

@@ -2,6 +2,11 @@
 
 This document outlines the standard release process for publishing updates to npm.
 
+> **Fork note:** `come2ry/ccresume` is distributed directly from GitHub. The
+> inherited npm publishing workflow is intentionally restricted to
+> `sasazame/ccresume`; users of this fork should follow the GitHub installation
+> commands in the README.
+
 ## Branch Strategy
 
 This project follows a develop/master branch strategy:
