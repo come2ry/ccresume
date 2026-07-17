@@ -85,14 +85,14 @@ Examples:
 
 Configuration:
   Key bindings can be customized in: ~/.config/ccresume/config.toml
-  See example: https://github.com/sasazame/ccresume/blob/develop/config.toml.example
+  See example: https://github.com/come2ry/ccresume/blob/develop/config.toml.example
   
   Note: When new features are added that conflict with your custom key bindings,
   you'll need to either:
     - Add the new key binding explicitly to your config.toml
     - Remove/modify the conflicting custom key binding
   
-For more info: https://github.com/sasazame/ccresume`);
+For more info: https://github.com/come2ry/ccresume`);
   process.exit(0);
 }
 

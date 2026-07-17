@@ -25,16 +25,23 @@ ccresume provides an interactive terminal interface to browse and manage your Cl
 
 ## Installation
 
-### Via npx (Recommended)
+### Via npx
 
 ```bash
-npx @sasazame/ccresume@latest
+npx --yes --package=github:come2ry/ccresume -- ccresume
 ```
 
-### Global Installation
+### Global Installation (Recommended)
 
 ```bash
-npm install -g @sasazame/ccresume
+npm install -g github:come2ry/ccresume
+```
+
+Run the same command again whenever you want to update to the latest version of
+this fork's default branch.
+
+```bash
+npm install -g github:come2ry/ccresume
 ```
 
 ## Usage
@@ -48,7 +55,7 @@ ccresume
 Or if using npx:
 
 ```bash
-npx @sasazame/ccresume@latest
+npx --yes --package=github:come2ry/ccresume -- ccresume
 ```
 
 ### Command Line Options
@@ -97,7 +104,7 @@ ccresume . --hide --dangerously-skip-permissions
 
 ## Requirements
 
-- **Node.js** 20 / 22 / 24 (LTS)
+- **Node.js** 22 / 24 (LTS)
 - **Claude Code** - Must be installed and configured
 - **Operating System** - Works on macOS, Linux, and Windows (both native & WSL)
 
@@ -179,7 +186,7 @@ https://mise.jdx.dev/getting-started.html
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/ccresume.git
+git clone https://github.com/come2ry/ccresume.git
 cd ccresume
 
 # Ensure mise is installed before proceeding
@@ -262,7 +269,7 @@ MIT
 
 ## Support
 
-For issues and feature requests, please use the [GitHub issue tracker](https://github.com/sasazame/ccresume/issues).
+For issues and feature requests specific to this fork, please use the [GitHub issue tracker](https://github.com/come2ry/ccresume/issues).
 
 ## 🐞 Known Issues
 
