@@ -40,7 +40,7 @@ run = "npm run dev"
 
 [tasks.build]
 description = "Build the project"
-run = "npm run build"
+run = "npm run compile"
 
 [tasks.lint]
 description = "Run linter"

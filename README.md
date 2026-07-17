@@ -28,20 +28,20 @@ ccresume provides an interactive terminal interface to browse and manage your Cl
 ### Via npx
 
 ```bash
-npx --yes --package=https://github.com/come2ry/ccresume/archive/refs/heads/develop.tar.gz -- ccresume
+npx --yes --package=come2ry/ccresume -- ccresume
 ```
 
 ### Global Installation (Recommended)
 
 ```bash
-npm install -g https://github.com/come2ry/ccresume/archive/refs/heads/develop.tar.gz
+npm install -g come2ry/ccresume
 ```
 
 Run the same command again whenever you want to update to the latest version of
 this fork's default branch.
 
 ```bash
-npm install -g https://github.com/come2ry/ccresume/archive/refs/heads/develop.tar.gz
+npm install -g come2ry/ccresume
 ```
 
 ## Usage
@@ -55,7 +55,7 @@ ccresume
 Or if using npx:
 
 ```bash
-npx --yes --package=https://github.com/come2ry/ccresume/archive/refs/heads/develop.tar.gz -- ccresume
+npx --yes --package=come2ry/ccresume -- ccresume
 ```
 
 ### Command Line Options
